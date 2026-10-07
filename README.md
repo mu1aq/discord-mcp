@@ -86,6 +86,13 @@ style link — so some links may not open.
 
 ## Install
 
+```sh
+git clone https://github.com/mu1aq/discord-mcp.git
+cd discord-mcp
+
+# or install from release
+```
+
 **Windows** (PowerShell 7+):
 ```powershell
 ./install.ps1
