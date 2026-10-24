@@ -215,6 +215,66 @@ class ReadFeatureTests(unittest.TestCase):
                 self.assertEqual(found["messages"][0]["message_url"], "https://discord.com/channels/10/20/102")
             sys.modules.pop("server", None)
 
+    def test_read_messages_cursor_pagination(self):
+        fake_mcp_package = types.ModuleType("mcp")
+        fake_mcp_package.__path__ = []
+        fake_mcp_server = types.ModuleType("mcp.server")
+        fake_mcp_server.__path__ = []
+        fake_fastmcp = types.ModuleType("mcp.server.fastmcp")
+
+        class FakeFastMCP:
+            def __init__(self, name):
+                self.name = name
+
+            def tool(self):
+                return lambda function: function
+
+        fake_fastmcp.FastMCP = FakeFastMCP
+        fake_api = types.ModuleType("discord_api")
+
+        async def no_api(*_args, **_kwargs):
+            return None
+
+        for name in (
+            "api_list_active_threads", "api_list_channels", "api_list_guilds",
+            "api_list_threads", "api_read_messages", "api_search_messages",
+        ):
+            setattr(fake_api, name, no_api)
+        fake_api.has_token = lambda: False
+        fake_modules = {
+            "mcp": fake_mcp_package, "mcp.server": fake_mcp_server,
+            "mcp.server.fastmcp": fake_fastmcp, "discord_api": fake_api,
+        }
+        # ids are snowflakes; newest first by timestamp == descending id
+        channel = [
+            {"id": "100", "channel_id": "20", "author": {"username": "A"},
+             "content": "one", "timestamp": "2026-09-22T10:00:00Z"},
+            {"id": "101", "channel_id": "20", "author": {"username": "A"},
+             "content": "two", "timestamp": "2026-09-23T10:00:00Z"},
+            {"id": "102", "channel_id": "20", "author": {"username": "A"},
+             "content": "three", "timestamp": "2026-09-24T10:00:00Z"},
+        ]
+        with patch.dict(sys.modules, fake_modules):
+            sys.modules.pop("server", None)
+            import server
+            with patch.object(server, "get_cached_messages", return_value={"20": channel}), \
+                 patch.object(server, "get_cached_channel_guild_map", return_value={}):
+                first = json.loads(asyncio.run(server.read_messages("20", limit=2, source="cache")))
+                self.assertEqual([m["id"] for m in first["messages"]], ["102", "101"])
+                self.assertTrue(first["has_more"])
+                self.assertEqual(first["oldest_id"], "101")
+                # page backward with the returned oldest_id
+                older = json.loads(asyncio.run(server.read_messages("20", limit=2, source="cache", before=first["oldest_id"])))
+                self.assertEqual([m["id"] for m in older["messages"]], ["100"])
+                self.assertFalse(older["has_more"])
+                # incremental: only messages newer than id 101
+                newer = json.loads(asyncio.run(server.read_messages("20", source="cache", after="101")))
+                self.assertEqual([m["id"] for m in newer["messages"]], ["102"])
+                # invalid cursor is rejected
+                bad = json.loads(asyncio.run(server.read_messages("20", source="cache", before="not-an-id")))
+                self.assertIn("error", bad)
+            sys.modules.pop("server", None)
+
 
 if __name__ == "__main__":
     unittest.main()
