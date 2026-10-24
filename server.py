@@ -17,12 +17,18 @@ from discord_api import (
     api_search_messages,
     has_token,
 )
-from discord_cache import (
+from local_store import (
     get_cached_channel_guild_map,
     get_cached_channels,
     get_cached_guild_info,
     get_cached_guilds,
     get_cached_messages,
+    save_channel_guild_map,
+    save_channels,
+    save_guilds,
+    save_messages,
+    store_status,
+    sync_from_appdata,
 )
 from discord_read import (
     attachment_details,
@@ -59,6 +65,7 @@ async def list_guilds() -> str:
                 name = g.get("name") or ""
                 if (not name or name.startswith("(guild")) and gid in api_names:
                     g["name"] = api_names[gid]
+            save_guilds(guilds)
 
     seen = {str(g.get("id")) for g in guilds}
     for guild in _guilds_from_messages():
@@ -105,6 +112,9 @@ async def list_channels(guild_id: str) -> str:
     channels = get_cached_channels(guild_id)
     if not channels and has_token():
         channels = await api_list_channels(guild_id) or []
+        if channels:
+            save_channels(guild_id, channels)
+            save_channel_guild_map({str(c["id"]): guild_id for c in channels if c.get("id")})
     by_id = {}
     for channel in channels:
         if channel.get("id"):
@@ -127,12 +137,37 @@ async def list_channels(guild_id: str) -> str:
     return json.dumps(sorted(by_id.values(), key=lambda c: (c["type"] != 4, str(c["name"]).casefold())), ensure_ascii=False, indent=2)
 
 
+def _snowflake(value: str | None) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(str(value))
+    except ValueError:
+        return None
+
+
+def _apply_cursor(msgs: list[dict], before: int | None, after: int | None) -> list[dict]:
+    """Keep messages strictly older than `before` and strictly newer than `after` (id cursor)."""
+    out = []
+    for m in msgs:
+        mid = _snowflake(m.get("id"))
+        if mid is None:
+            continue
+        if before is not None and mid >= before:
+            continue
+        if after is not None and mid <= after:
+            continue
+        out.append(m)
+    return out
+
+
 @mcp.tool()
 async def read_messages(
     channel_id: str, limit: int = 50, source: str = "auto",
     author: str | None = None, since: str | None = None, until: str | None = None,
+    before: str | None = None, after: str | None = None,
 ) -> str:
-    """Read messages from a Discord channel.
+    """Read messages from a Discord channel, newest first.
 
     Args:
         channel_id: Discord channel ID
@@ -141,9 +176,17 @@ async def read_messages(
         author: Optional exact author ID, username, or display name
         since: Inclusive UTC date or ISO 8601 timestamp
         until: Inclusive UTC date or ISO 8601 timestamp
+        before: Message ID cursor — return only messages OLDER than it (page backward into history)
+        after: Message ID cursor — return only messages NEWER than it (incremental: pass the last id you read)
     """
     if source not in ("cache", "api", "auto"):
         return json.dumps({"error": "source must be cache, api, or auto"})
+    before_id = _snowflake(before)
+    after_id = _snowflake(after)
+    if before is not None and before_id is None:
+        return json.dumps({"error": "before must be a numeric message id"})
+    if after is not None and after_id is None:
+        return json.dumps({"error": "after must be a numeric message id"})
     limit = max(1, min(limit, 100))
     msgs = []
 
@@ -151,14 +194,12 @@ async def read_messages(
         all_cached = get_cached_messages()
         msgs = all_cached.get(channel_id, [])
 
-    if source == "api" or (source == "auto" and len(msgs) < limit and has_token()):
-        api_msgs = await api_read_messages(channel_id, limit)
+    cursored = _apply_cursor(msgs, before_id, after_id)
+    # Discord's API cursor is `before` only; hit it when the store can't satisfy the page.
+    if source == "api" or (source == "auto" and len(cursored) < limit and has_token()):
+        api_msgs = await api_read_messages(channel_id, limit, before=before)
         if api_msgs:
-            seen_ids = {m["id"] for m in msgs}
-            for m in api_msgs:
-                if m.get("id") not in seen_ids:
-                    msgs.append(m)
-            msgs.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
+            msgs = save_messages(channel_id, msgs + api_msgs)
 
     channel_guild_map = get_cached_channel_guild_map()
     try:
@@ -168,14 +209,19 @@ async def read_messages(
         )
     except ValueError as exc:
         return json.dumps({"error": str(exc)})
+    msgs = _apply_cursor(msgs, before_id, after_id)
     if not msgs:
         return json.dumps({"error": f"No matching messages for channel {channel_id}", "source": source})
 
-    formatted = [_format_msg(m, channel_guild_map) for m in msgs[:limit]]
+    page = msgs[:limit]
+    formatted = [_format_msg(m, channel_guild_map) for m in page]
     return json.dumps({
         "channel_id": channel_id,
         "count": len(formatted),
         "total_available": len(msgs),
+        "has_more": len(msgs) > len(page),
+        "newest_id": formatted[0]["id"] if formatted else None,
+        "oldest_id": formatted[-1]["id"] if formatted else None,
         "messages": formatted,
     }, ensure_ascii=False, indent=2)
 
@@ -374,11 +420,7 @@ async def read_thread(thread_id: str, limit: int = 50) -> str:
     if len(msgs) < limit and has_token():
         api_msgs = await api_read_messages(thread_id, limit)
         if api_msgs:
-            seen_ids = {m["id"] for m in msgs}
-            for m in api_msgs:
-                if m.get("id") not in seen_ids:
-                    msgs.append(m)
-            msgs.sort(key=lambda m: m.get("timestamp", ""), reverse=True)
+            msgs = save_messages(thread_id, msgs + api_msgs)
 
     if not msgs:
         return json.dumps({"error": f"No messages for thread {thread_id}"})
@@ -424,6 +466,30 @@ def cache_stats() -> str:
         "newest_message": newest,
         "api_available": has_token(),
     }, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def sync_cache() -> str:
+    """Snapshot the Discord client's APPDATA cache into the local ./cache store (no API calls).
+
+    Run this to pre-organize guilds, channels, and messages into the project-local
+    store that every read uses first. Safe to run repeatedly — it merges, never deletes.
+    """
+    try:
+        stats = sync_from_appdata()
+    except Exception as exc:  # APPDATA missing/locked
+        return json.dumps({"error": f"APPDATA sync failed: {exc}"}, ensure_ascii=False)
+    return json.dumps({"synced": True, **stats}, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+def cache_status() -> str:
+    """Compare the local ./cache store against the Discord client's APPDATA cache.
+
+    Shows, per channel, how far the store has data vs. how far the client has flushed
+    to disk — i.e. whether a sync_cache would pull anything newer.
+    """
+    return json.dumps(store_status(), ensure_ascii=False, indent=2)
 
 
 if __name__ == "__main__":
