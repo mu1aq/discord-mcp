@@ -119,6 +119,44 @@ def attachment_details(attachment: dict) -> dict:
     }
 
 
+def _format_embed(embed: dict) -> dict:
+    author = embed.get("author") or {}
+    footer = embed.get("footer") or {}
+    return {
+        "title": embed.get("title"),
+        "description": embed.get("description"),
+        "url": embed.get("url"),
+        "color": embed.get("color"),
+        "author": {"name": author.get("name"), "url": author.get("url")} if author else None,
+        "fields": [
+            {"name": f.get("name"), "value": f.get("value"), "inline": bool(f.get("inline"))}
+            for f in (embed.get("fields") or []) if isinstance(f, dict)
+        ],
+        "footer": {"text": footer.get("text")} if footer else None,
+        "image": (embed.get("image") or {}).get("url"),
+        "thumbnail": (embed.get("thumbnail") or {}).get("url"),
+        "timestamp": embed.get("timestamp"),
+    }
+
+
+def _embed_to_text(embed: dict) -> str:
+    """Render one formatted embed as Markdown-ish text for exports."""
+    parts = []
+    if embed["author"] and embed["author"]["name"]:
+        parts.append(f"**{embed['author']['name']}**")
+    if embed["title"]:
+        parts.append(f"### {embed['title']}")
+    if embed["url"]:
+        parts.append(embed["url"])
+    if embed["description"]:
+        parts.append(embed["description"])
+    for field in embed["fields"]:
+        parts.append(f"**{field['name'] or ''}**\n{field['value'] or ''}")
+    if embed["footer"] and embed["footer"]["text"]:
+        parts.append(f"_{embed['footer']['text']}_")
+    return "\n\n".join(parts)
+
+
 def format_message(message: dict, channel_guild_map: dict[str, str] | None = None) -> dict:
     user = message.get("author") or {}
     channel_id = str(message.get("channel_id")) if message.get("channel_id") else None
@@ -130,6 +168,7 @@ def format_message(message: dict, channel_guild_map: dict[str, str] | None = Non
         if channel_id and message_id else None
     )
     attachments = [a for a in (message.get("attachments") or []) if isinstance(a, dict)]
+    embeds = [e for e in (message.get("embeds") or []) if isinstance(e, dict)]
     return {
         "id": message_id,
         "channel_id": channel_id,
@@ -143,7 +182,8 @@ def format_message(message: dict, channel_guild_map: dict[str, str] | None = Non
         "message_url": message_url,
         "attachments": [a.get("filename") for a in attachments],
         "attachment_details": [attachment_details(a) for a in attachments],
-        "embeds_count": len(message.get("embeds") or []),
+        "embeds_count": len(embeds),
+        "embeds": [_format_embed(e) for e in embeds],
     }
 
 
@@ -253,10 +293,11 @@ def export_cached_messages(
         lines = [f"# Discord channel {channel_id}", "", f"Exported: {exported_at}",
                  f"Messages: {len(formatted)}", ""]
         for message in formatted:
+            embed_text = "\n\n".join(t for t in (_embed_to_text(e) for e in message["embeds"]) if t)
             lines.extend([
                 f"## {message['timestamp'] or 'Unknown time'} — {message['author']}", "",
                 f"Message: {message['message_url'] or 'link unavailable'}", "",
-                message["content"] or "(no text)", "",
+                message["content"] or embed_text or "(no text)", "",
             ])
             if message["attachment_details"]:
                 lines.append("Attachments:")
