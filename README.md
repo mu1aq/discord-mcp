@@ -74,6 +74,11 @@ the ToS risk, do not configure a token — cache mode works on its own.
 - `search_messages` works with an empty `query` — filter by channel, author, or
   date alone. Results and single-message lookups include the Discord message link
   and attachment metadata.
+- Messages carry their **embeds**: `read_messages`, `get_message`, and
+  `search_messages` return an `embeds` array (title, description, url, color,
+  author, fields, footer, image, thumbnail, timestamp) next to `embeds_count`, so
+  embed-only messages (rules/announcement channels) are readable. Markdown export
+  renders an embed's text when the message has no content.
 - Pass the `attachment_id` from `list_attachments(channel_id, message_id)` to
   `download_attachment`. The download tool only accepts Discord CDN URLs that a
   cached message points to, and caps each file at 100 MiB. Expired or uncached

@@ -38,6 +38,7 @@ Discord 대화내역을 Claude에서 읽을 수 있는 MCP 서버.
 
 - `read_messages`와 `search_messages`의 `author`는 작성자 ID, 사용자 이름 또는 표시 이름과 정확히 일치시킨다. `since`와 `until`은 `YYYY-MM-DD` 또는 ISO 8601 형식이며, 양 끝을 포함한다. 날짜만 지정하면 UTC 날짜를 기준으로 한다.
 - `search_messages`는 `query`를 비워 두고 채널·작성자·날짜 조건만으로도 검색할 수 있다. 결과와 단일 메시지 조회에는 Discord 메시지 링크와 첨부파일 메타데이터가 포함된다.
+- 메시지는 **embed 본문**을 함께 담는다. `read_messages`, `get_message`, `search_messages`는 `embeds_count`와 더불어 `embeds` 배열(title, description, url, color, author, fields, footer, image, thumbnail, timestamp)을 반환하므로, 본문이 embed에만 있는 메시지(규칙·공지 채널)도 읽힌다. markdown 내보내기는 메시지에 text content가 없으면 embed 내용을 렌더한다.
 - `list_attachments(channel_id, message_id)`에서 얻은 `attachment_id`로 `download_attachment`를 호출한다. 다운로드 도구는 로컬 캐시의 메시지가 가리키는 Discord CDN 주소만 허용하며, 파일당 100 MiB로 제한한다. 주소가 만료됐거나 캐시에 없으면 오류를 반환한다.
 - `export_messages(channel_id, format="json")` 또는 `format="markdown"`으로 캐시된 대화를 저장한다. `author`, `since`, `until` 필터도 적용할 수 있다. 내보내기는 오래된 메시지부터 기록한다.
 - 첨부파일 다운로드와 대화 내보내기는 로컬 파일을 생성한다. 로컬 저장소 `cache/`와 `downloads/`, `exports/`, 원본 백업 `backups/`는 Git 추적에서 제외한다.
