@@ -276,5 +276,36 @@ class ReadFeatureTests(unittest.TestCase):
             sys.modules.pop("server", None)
 
 
+    def test_embed_body_is_surfaced_and_exported(self):
+        message = {
+            "id": "200", "channel_id": "20", "guild_id": "10",
+            "author": {"id": "9", "username": "Bot"},
+            "content": "", "timestamp": "2026-11-02T10:00:00Z", "attachments": [],
+            "embeds": [{
+                "title": "참가 안내", "description": "규칙은 다음과 같다.",
+                "url": "https://ctf.example/rules", "color": 5814783,
+                "author": {"name": "AutoHack 2026"},
+                "fields": [{"name": "시작", "value": "11/02", "inline": True}],
+                "footer": {"text": "운영팀"},
+                "image": {"url": "https://cdn.discordapp.com/x.png"},
+            }],
+        }
+        formatted = read.format_message(message)
+        self.assertEqual(formatted["embeds_count"], 1)
+        embed = formatted["embeds"][0]
+        self.assertEqual(embed["title"], "참가 안내")
+        self.assertEqual(embed["description"], "규칙은 다음과 같다.")
+        self.assertEqual(embed["fields"][0], {"name": "시작", "value": "11/02", "inline": True})
+        self.assertEqual(embed["footer"]["text"], "운영팀")
+        self.assertEqual(embed["image"], "https://cdn.discordapp.com/x.png")
+
+        with tempfile.TemporaryDirectory() as temp_dir, patch.object(read, "EXPORT_DIR", Path(temp_dir)):
+            result = read.export_cached_messages("20", [message], file_format="markdown")
+            markdown = Path(result["path"]).read_text(encoding="utf-8")
+        self.assertIn("참가 안내", markdown)
+        self.assertIn("규칙은 다음과 같다.", markdown)
+        self.assertNotIn("(no text)", markdown)
+
+
 if __name__ == "__main__":
     unittest.main()
